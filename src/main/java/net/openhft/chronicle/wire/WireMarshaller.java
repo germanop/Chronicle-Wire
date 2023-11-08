@@ -500,6 +500,74 @@ public class WireMarshaller<T> {
         return isLeaf;
     }
 
+    static class BigConverterFieldAccess extends FieldAccess {
+
+        @NotNull
+        private final BigConverter bigConverter;
+
+        BigConverterFieldAccess(@NotNull Field field, @NotNull BigConverter conv) {
+            super(field);
+            this.bigConverter = conv;
+        }
+
+        static BigConverter getInstance(Class clazz) {
+            try {
+                Field converterField = clazz.getDeclaredField("INSTANCE");
+                return (BigConverter) converterField.get(null);
+            } catch (NoSuchFieldException nsfe) {
+                return (BigConverter) ObjectUtils.newInstance(clazz);
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        protected void setBig(Object o, long offs, long[] vals) {
+            if (vals.length != 2) {
+                throw new IORuntimeException("field " + field.getName() + " not 128bit");
+            }
+            unsafePutLong(o, offs + 16, vals[0]);
+            unsafePutLong(o, offs + 24, vals[1]);
+        }
+
+        @Override
+        protected void getValue(Object o, ValueOut write, Object previous) throws IllegalAccessException, InvalidMarshallableException {
+            Object v = field.get(o);
+            if (v instanceof Number) {
+                Number num = (Number) v;
+                if (write.isBinary()) {
+                    // ToDo
+                } else {
+                    StringBuilder sb = WSBP.acquireStringBuilder();
+                    bigConverter.append(sb, num);
+                    if (sb.length() == 0) {
+                        write.text("");
+                    } else {
+                        write.rawText(sb);
+                    }
+                }
+            } else {
+                throw new InvalidMarshallableException(String.format("Cannot marshall field %s", field.getName()));
+            }
+        }
+
+        @Override
+        protected void setValue(Object o, ValueIn read, boolean overwrite) throws IllegalAccessException {
+            if (read.isBinary()) {
+                // ToDo
+            } else {
+                StringBuilder sb = RSBP.acquireStringBuilder();
+                read.text(sb);
+                Object obj = bigConverter.parseObj(sb);
+                field.set(o, obj);
+            }
+        }
+
+        @Override
+        public void getAsBytes(Object o, Bytes<?> bytes) throws IllegalAccessException {
+
+        }
+    }
+
     /**
      * Provides a field accessor that's specialized for handling fields which require
      * conversion between integer values and string representations using a LongConverter.
@@ -784,6 +852,11 @@ public class WireMarshaller<T> {
                     return new StringBuilderFieldAccess(field);
                 case "net.openhft.chronicle.bytes.Bytes":
                     return new BytesFieldAccess(field);
+                case "software.chronicle.matching.core.ID128Immutable":
+                    BigConverter i128conv = acquireBigConverter(field);
+                    return i128conv == null
+                            ? new ObjectFieldAccess(field, null)
+                            : new BigConverterFieldAccess(field, i128conv);
                 default:
                     @Nullable Boolean isLeaf = null;
                     if (IntValue.class.isAssignableFrom(type))
@@ -804,6 +877,15 @@ public class WireMarshaller<T> {
             LongConverter longConverter = null;
             if (longConversion != null)
                 longConverter = LongConverterFieldAccess.getInstance(longConversion.value());
+            return longConverter;
+        }
+
+        @Nullable
+        private static BigConverter acquireBigConverter(@NotNull Field field) {
+            LongConversion longConversion = Jvm.findAnnotation(field, LongConversion.class);
+            BigConverter longConverter = null;
+            if (longConversion != null)
+                longConverter = BigConverterFieldAccess.getInstance(longConversion.value());
             return longConverter;
         }
 
